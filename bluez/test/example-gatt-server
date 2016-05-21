@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 import dbus
 import dbus.exceptions
@@ -6,7 +6,11 @@ import dbus.mainloop.glib
 import dbus.service
 
 import array
-import gobject
+try:
+  from gi.repository import GObject
+except ImportError:
+  import gobject as GObject
+import sys
 
 from random import randint
 
@@ -35,6 +39,38 @@ class InvalidValueLengthException(dbus.exceptions.DBusException):
 
 class FailedException(dbus.exceptions.DBusException):
     _dbus_error_name = 'org.bluez.Error.Failed'
+
+
+class Application(dbus.service.Object):
+    def __init__(self, bus):
+        self.path = '/'
+        self.services = []
+        dbus.service.Object.__init__(self, bus, self.path)
+        self.add_service(HeartRateService(bus, 0))
+        self.add_service(BatteryService(bus, 1))
+        self.add_service(TestService(bus, 2))
+
+    def get_path(self):
+        return dbus.ObjectPath(self.path)
+
+    def add_service(self, service):
+        self.services.append(service)
+
+    @dbus.service.method(DBUS_OM_IFACE, out_signature='a{oa{sa{sv}}}')
+    def GetManagedObjects(self):
+        response = {}
+        print('GetManagedObjects')
+
+        for service in self.services:
+            response[service.get_path()] = service.get_properties()
+            chrcs = service.get_characteristics()
+            for chrc in chrcs:
+                response[chrc.get_path()] = chrc.get_properties()
+                descs = chrc.get_descriptors()
+                for desc in descs:
+                    response[desc.get_path()] = desc.get_properties()
+
+        return response
 
 
 class Service(dbus.service.Object):
@@ -82,21 +118,6 @@ class Service(dbus.service.Object):
             raise InvalidArgsException()
 
         return self.get_properties[GATT_SERVICE_IFACE]
-
-    @dbus.service.method(DBUS_OM_IFACE, out_signature='a{oa{sa{sv}}}')
-    def GetManagedObjects(self):
-        response = {}
-        print('GetManagedObjects')
-
-        response[self.get_path()] = self.get_properties()
-        chrcs = self.get_characteristics()
-        for chrc in chrcs:
-            response[chrc.get_path()] = chrc.get_properties()
-            descs = chrc.get_descriptors()
-            for desc in descs:
-                response[desc.get_path()] = desc.get_properties()
-
-        return response
 
 
 class Characteristic(dbus.service.Object):
@@ -267,7 +288,7 @@ class HeartRateMeasurementChrc(Characteristic):
         if not self.notifying:
             return
 
-        gobject.timeout_add(1000, self.hr_msrmt_cb)
+        GObject.timeout_add(1000, self.hr_msrmt_cb)
 
     def StartNotify(self):
         if self.notifying:
@@ -354,7 +375,7 @@ class BatteryLevelCharacteristic(Characteristic):
                 service)
         self.notifying = False
         self.battery_lvl = 100
-        gobject.timeout_add(5000, self.drain_battery)
+        GObject.timeout_add(5000, self.drain_battery)
 
     def notify_battery_level(self):
         if not self.notifying:
@@ -462,7 +483,7 @@ class CharacteristicUserDescriptionDescriptor(Descriptor):
 
     def __init__(self, bus, index, characteristic):
         self.writable = 'writable-auxiliaries' in characteristic.flags
-        self.value = array.array('B', 'This is a characteristic for testing')
+        self.value = array.array('B', b'This is a characteristic for testing')
         self.value = self.value.tolist()
         Descriptor.__init__(
                 self, bus, index,
@@ -523,12 +544,12 @@ class TestEncryptDescriptor(Descriptor):
                 dbus.Byte('T'), dbus.Byte('e'), dbus.Byte('s'), dbus.Byte('t')
         ]
 
-def register_service_cb():
-    print('GATT service registered')
+def register_app_cb():
+    print('GATT application registered')
 
 
-def register_service_error_cb(error):
-    print('Failed to register service: ' + str(error))
+def register_app_error_cb(error):
+    print('Failed to register application: ' + str(error))
     mainloop.quit()
 
 
@@ -537,8 +558,8 @@ def find_adapter(bus):
                                DBUS_OM_IFACE)
     objects = remote_om.GetManagedObjects()
 
-    for o, props in objects.iteritems():
-        if props.has_key(GATT_MANAGER_IFACE):
+    for o, props in objects.items():
+        if GATT_MANAGER_IFACE in props.keys():
             return o
 
     return None
@@ -559,21 +580,13 @@ def main():
             bus.get_object(BLUEZ_SERVICE_NAME, adapter),
             GATT_MANAGER_IFACE)
 
-    hr_service = HeartRateService(bus, 0)
-    bat_service = BatteryService(bus, 1)
-    test_service = TestService(bus, 2)
+    app = Application(bus)
 
-    mainloop = gobject.MainLoop()
+    mainloop = GObject.MainLoop()
 
-    service_manager.RegisterService(hr_service.get_path(), {},
-                                    reply_handler=register_service_cb,
-                                    error_handler=register_service_error_cb)
-    service_manager.RegisterService(bat_service.get_path(), {},
-                                    reply_handler=register_service_cb,
-                                    error_handler=register_service_error_cb)
-    service_manager.RegisterService(test_service.get_path(), {},
-                                    reply_handler=register_service_cb,
-                                    error_handler=register_service_error_cb)
+    service_manager.RegisterApplication(app.get_path(), {},
+                                    reply_handler=register_app_cb,
+                                    error_handler=register_app_error_cb)
 
     mainloop.run()
 

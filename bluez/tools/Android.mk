@@ -1,6 +1,6 @@
 #
 # Bluetooth tools for setup and debug
-#			daniel_hk
+#
 LOCAL_PATH := external/bluetooth
 
 # Retrieve BlueZ version from configure.ac file

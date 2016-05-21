@@ -36,9 +36,6 @@
 #include "csr.h"
 #include "ubcsp.h"
 
-#include <cutils/log.h>
-#include <cutils/properties.h>
-
 static uint16_t seqnum = 0x0000;
 
 static int fd = -1;
@@ -56,7 +53,7 @@ int csr_open_bcsp(char *device, speed_t bcsp_rate)
 	int timeout = 0;
 
 	if (!device)
-		device = "/dev/ttyHS0";
+		device = "/dev/ttyS0";
 
 	fd = open(device, O_RDWR | O_NOCTTY);
 	if (fd < 0) {
@@ -79,8 +76,7 @@ int csr_open_bcsp(char *device, speed_t bcsp_rate)
 	ti.c_cflag |=  CLOCAL;
 	ti.c_cflag &= ~CRTSCTS;
 	ti.c_cflag |=  PARENB;
-	/*ti.c_cflag &= ~PARODD;*/
-	ti.c_cflag |= PARODD;
+	ti.c_cflag &= ~PARODD;
 	ti.c_cflag &= ~CSIZE;
 	ti.c_cflag |=  CS8;
 	ti.c_cflag &= ~CSTOPB;
@@ -88,8 +84,7 @@ int csr_open_bcsp(char *device, speed_t bcsp_rate)
 	ti.c_cc[VMIN] = 1;
 	ti.c_cc[VTIME] = 0;
 
-	/*cfsetospeed(&ti, bcsp_rate);*/
-	cfsetospeed(&ti, B115200);
+	cfsetospeed(&ti, bcsp_rate);
 
 	if (tcsetattr(fd, TCSANOW, &ti) < 0) {
 		fprintf(stderr, "Can't change port settings: %s (%d)\n",
@@ -123,7 +118,7 @@ int csr_open_bcsp(char *device, speed_t bcsp_rate)
 	while (1) {
 		delay = ubcsp_poll(&activity);
 
-		if (activity & UBCSP_PACKET_RECEIVED)
+		if (activity & UBCSP_PACKET_SENT)
 			break;
 
 		if (delay) {
@@ -224,6 +219,7 @@ static int do_command(uint16_t command, uint16_t seqnum, uint16_t varid, uint8_t
 
 			if (timeout++ > 5000) {
 				fprintf(stderr, "Operation timed out\n");
+				errno = ETIMEDOUT;
 				return -1;
 			}
 		}
@@ -256,9 +252,5 @@ int csr_write_bcsp(uint16_t varid, uint8_t *value, uint16_t length)
 
 void csr_close_bcsp(void)
 {
-	if(fd != -1)
-	{
-		close(fd);
-		fd = -1;
-	}
+	close(fd);
 }

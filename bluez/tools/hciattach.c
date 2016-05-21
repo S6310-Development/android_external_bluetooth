@@ -27,7 +27,6 @@
 #include <config.h>
 #endif
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -42,16 +41,12 @@
 #include <sys/time.h>
 #include <sys/param.h>
 #include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <sys/uio.h>
 
 #include "lib/bluetooth.h"
 #include "lib/hci.h"
 #include "lib/hci_lib.h"
 
 #include "hciattach.h"
-
-#include "ppoll.h"
 
 struct uart_t {
 	char *type;
@@ -68,6 +63,7 @@ struct uart_t {
 };
 
 #define FLOW_CTL	0x0001
+#define AMP_DEV		0x0002
 #define ENABLE_PM	1
 #define DISABLE_PM	0
 
@@ -88,7 +84,7 @@ static void sig_alarm(int sig)
 	exit(1);
 }
 
-static int uart_speed(int s)
+int uart_speed(int s)
 {
 	switch (s) {
 	case 9600:
@@ -130,6 +126,10 @@ static int uart_speed(int s)
 #ifdef B3500000
 	case 3500000:
 		return B3500000;
+#endif
+#ifdef B3710000
+	case 3710000:
+		return B3710000;
 #endif
 #ifdef B4000000
 	case 4000000:
@@ -294,7 +294,7 @@ static int digi(int fd, struct uart_t *u, struct termios *ti)
 
 static int texas(int fd, struct uart_t *u, struct termios *ti)
 {
-	return texas_init(fd, ti);
+	return texas_init(fd, &u->speed, ti);
 }
 
 static int texas2(int fd, struct uart_t *u, struct termios *ti)
@@ -320,6 +320,16 @@ static int ath3k_pm(int fd, struct uart_t *u, struct termios *ti)
 static int qualcomm(int fd, struct uart_t *u, struct termios *ti)
 {
 	return qualcomm_init(fd, u->speed, ti, u->bdaddr);
+}
+
+static int intel(int fd, struct uart_t *u, struct termios *ti)
+{
+	return intel_init(fd, u->init_speed, &u->speed, ti);
+}
+
+static int bcm43xx(int fd, struct uart_t *u, struct termios *ti)
+{
+	return bcm43xx_init(fd, u->init_speed, u->speed, ti, u->bdaddr);
 }
 
 static int read_check(int fd, void *buf, int count)
@@ -351,8 +361,6 @@ static void bcsp_tshy_sig_alarm(int sig)
 	unsigned char bcsp_sync_pkt[10] = {0xc0,0x00,0x41,0x00,0xbe,0xda,0xdc,0xed,0xed,0xc0};
 	static int retries = 0;
 
-	printf("[hciattach] Shy state. Send sync.\n"); //SS_BLUETOOTH(is80.hwang) 2012.02.10 : for CSR BT Initialization
-
 	if (retries < bcsp_max_retries) {
 		retries++;
 		if (write(serial_fd, &bcsp_sync_pkt, 10) < 0)
@@ -370,8 +378,6 @@ static void bcsp_tconf_sig_alarm(int sig)
 {
 	unsigned char bcsp_conf_pkt[10] = {0xc0,0x00,0x41,0x00,0xbe,0xad,0xef,0xac,0xed,0xc0};
 	static int retries = 0;
-
-	printf("[hciattach] Curious state. Send Conf.\n"); //SS_BLUETOOTH(is80.hwang) 2012.02.10 : for CSR BT Initialization
 
 	if (retries < bcsp_max_retries){
 		retries++;
@@ -404,8 +410,7 @@ static int bcsp(int fd, struct uart_t *u, struct termios *ti)
 	}
 
 	ti->c_cflag |= PARENB;
-	/*ti->c_cflag &= ~(PARODD);*/
-	ti->c_cflag |= PARODD;
+	ti->c_cflag &= ~(PARODD);
 
 	if (tcsetattr(fd, TCSANOW, ti) < 0) {
 		perror("Can't set port settings");
@@ -510,8 +515,6 @@ static int bcsp(int fd, struct uart_t *u, struct termios *ti)
 		if (len < 0)
 			return -errno;
 	}
-
-	printf("[hciattach] Garrulous state.\n"); //SS_BLUETOOTH(is80.hwang) 2012.02.10 : for CSR BT Initialization
 
 	/* State = garrulous */
 
@@ -1137,12 +1140,28 @@ struct uart_t uart[] = {
 	{ "bcm2035",    0x0A5C, 0x2035, HCI_UART_H4,   115200, 460800,
 				FLOW_CTL, DISABLE_PM, NULL, bcm2035  },
 
+	/* Broadcom BCM43XX */
+	{ "bcm43xx",    0x0000, 0x0000, HCI_UART_H4,   115200, 3000000,
+				FLOW_CTL, DISABLE_PM, NULL, bcm43xx, NULL  },
+
 	{ "ath3k",    0x0000, 0x0000, HCI_UART_ATH3K, 115200, 115200,
 			FLOW_CTL, DISABLE_PM, NULL, ath3k_ps, ath3k_pm  },
 
 	/* QUALCOMM BTS */
 	{ "qualcomm",   0x0000, 0x0000, HCI_UART_H4,   115200, 115200,
 			FLOW_CTL, DISABLE_PM, NULL, qualcomm, NULL },
+
+	/* Intel Bluetooth Module */
+	{ "intel",      0x0000, 0x0000, HCI_UART_H4,   115200, 115200,
+			FLOW_CTL, DISABLE_PM, NULL, intel, NULL },
+
+	/* Three-wire UART */
+	{ "3wire",      0x0000, 0x0000, HCI_UART_3WIRE, 115200, 115200,
+			0, DISABLE_PM, NULL, NULL, NULL },
+
+	/* AMP controller UART */
+	{ "amp",	0x0000, 0x0000, HCI_UART_H4, 115200, 115200,
+			AMP_DEV, DISABLE_PM, NULL, NULL, NULL },
 
 	{ NULL, 0 }
 };
@@ -1176,6 +1195,9 @@ static int init_uart(char *dev, struct uart_t *u, int send_break, int raw)
 
 	if (raw)
 		flags |= 1 << HCI_UART_RAW_DEVICE;
+
+	if (u->flags & AMP_DEV)
+		flags |= 1 << HCI_UART_CREATE_AMP;
 
 	fd = open(dev, O_RDWR | O_NOCTTY);
 	if (fd < 0) {
@@ -1219,10 +1241,6 @@ static int init_uart(char *dev, struct uart_t *u, int send_break, int raw)
 	if (u->init && u->init(fd, u, &ti) < 0)
 		goto fail;
 
-	// [GGSM][sc47.yun] Fixed kernel panic issue at HCI tty command. So Delay initial UART setup.
-	usleep(500000);
-	// end. [GGSM][sc47.yun] Fixed kernel panic issue at HCI tty command
-
 	tcflush(fd, TCIOFLUSH);
 
 	/* Set actual baudrate */
@@ -1262,7 +1280,9 @@ static void usage(void)
 {
 	printf("hciattach - HCI UART driver initialization utility\n");
 	printf("Usage:\n");
-	printf("\thciattach [-n] [-p] [-b] [-r] [-t timeout] [-s initial_speed] <tty> <type | id> [speed] [flow|noflow] [bdaddr]\n");
+	printf("\thciattach [-n] [-p] [-b] [-r] [-t timeout] [-s initial_speed]"
+			" <tty> <type | id> [speed] [flow|noflow]"
+			" [sleep|nosleep] [bdaddr]\n");
 	printf("\thciattach -l\n");
 }
 

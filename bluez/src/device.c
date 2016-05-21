@@ -238,7 +238,6 @@ struct btd_device {
 	 * attribute cache support can be built.
 	 */
 	struct gatt_db *db;			/* GATT db cache */
-	bool gatt_cache_used;			/* true if discovery skipped */
 	struct bt_gatt_client *client;		/* GATT client instance */
 	struct bt_gatt_server *server;		/* GATT server instance */
 
@@ -949,38 +948,14 @@ static gboolean dev_property_exists_tx_power(const GDBusPropertyTable *property,
 	return TRUE;
 }
 
-static void append_service_path(const char *path, void *user_data)
-{
-	DBusMessageIter *array = user_data;
-
-	dbus_message_iter_append_basic(array, DBUS_TYPE_OBJECT_PATH, &path);
-}
-
-static gboolean dev_property_get_gatt_services(
-					const GDBusPropertyTable *property,
+static gboolean
+dev_property_get_svc_resolved(const GDBusPropertyTable *property,
 					DBusMessageIter *iter, void *data)
 {
-	struct btd_device *dev = data;
-	DBusMessageIter array;
+	struct btd_device *device = data;
+	gboolean val = device->svc_refreshed;
 
-	dbus_message_iter_open_container(iter, DBUS_TYPE_ARRAY, "o", &array);
-
-	btd_gatt_client_foreach_service(dev->client_dbus, append_service_path,
-									&array);
-
-	dbus_message_iter_close_container(iter, &array);
-
-	return TRUE;
-}
-
-static gboolean dev_property_exists_gatt_services(
-					const GDBusPropertyTable *property,
-					void *data)
-{
-	struct btd_device *dev = data;
-
-	if (!dev->client || !bt_gatt_client_is_ready(dev->client))
-		return FALSE;
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_BOOLEAN, &val);
 
 	return TRUE;
 }
@@ -1477,7 +1452,8 @@ static int connect_next(struct btd_device *dev)
 	while (dev->pending) {
 		service = dev->pending->data;
 
-		if (btd_service_connect(service) == 0)
+		err = btd_service_connect(service);
+		if (!err)
 			return 0;
 
 		dev->pending = g_slist_delete_link(dev->pending, dev->pending);
@@ -1498,7 +1474,7 @@ static void device_profile_connected(struct btd_device *dev,
 		btd_device_set_temporary(dev, false);
 
 	if (dev->pending == NULL)
-		return;
+		goto done;
 
 	if (!btd_device_is_connected(dev)) {
 		switch (-err) {
@@ -1732,8 +1708,11 @@ static DBusMessage *connect_profiles(struct btd_device *dev, uint8_t bdaddr_type
 	}
 
 	err = connect_next(dev);
-	if (err < 0)
+	if (err < 0) {
+		if (err == -EALREADY)
+			return dbus_message_new_method_return(msg);
 		return btd_error_failed(msg, strerror(-err));
+	}
 
 	dev->connect = dbus_message_ref(msg);
 
@@ -2110,6 +2089,9 @@ static void store_gatt_db(struct btd_device *device)
 	key_file = g_key_file_new();
 	g_key_file_load_from_file(key_file, filename, 0, NULL);
 
+	/* Remove current attributes since it might have changed */
+	g_key_file_remove_group(key_file, "Attributes", NULL);
+
 	saver.key_file = key_file;
 	saver.device = device;
 
@@ -2169,6 +2151,17 @@ done:
 	browse_request_free(req);
 }
 
+static void device_set_svc_refreshed(struct btd_device *device, bool value)
+{
+	if (device->svc_refreshed == value)
+		return;
+
+	device->svc_refreshed = value;
+
+	g_dbus_emit_property_changed(dbus_conn, device->path,
+					DEVICE_INTERFACE, "ServicesResolved");
+}
+
 static void device_svc_resolved(struct btd_device *dev, uint8_t bdaddr_type,
 								int err)
 {
@@ -2184,7 +2177,7 @@ static void device_svc_resolved(struct btd_device *dev, uint8_t bdaddr_type,
 	 * device.
 	 */
 	if (state->connected)
-		dev->svc_refreshed = true;
+		device_set_svc_refreshed(dev, true);
 
 	g_slist_free_full(dev->eir_uuids, g_free);
 	dev->eir_uuids = NULL;
@@ -2526,8 +2519,7 @@ static const GDBusPropertyTable device_properties[] = {
 	{ "TxPower", "n", dev_property_get_tx_power, NULL,
 					dev_property_exists_tx_power,
 					G_DBUS_PROPERTY_FLAG_EXPERIMENTAL },
-	{ "GattServices", "ao", dev_property_get_gatt_services, NULL,
-					dev_property_exists_gatt_services,
+	{ "ServicesResolved", "b", dev_property_get_svc_resolved, NULL, NULL,
 					G_DBUS_PROPERTY_FLAG_EXPERIMENTAL },
 
 	{ }
@@ -2579,8 +2571,9 @@ void device_remove_connection(struct btd_device *device, uint8_t bdaddr_type)
 		return;
 
 	state->connected = false;
-	device->svc_refreshed = false;
 	device->general_connect = FALSE;
+
+	device_set_svc_refreshed(device, false);
 
 	if (device->disconn_timer > 0) {
 		g_source_remove(device->disconn_timer);
@@ -3008,7 +3001,7 @@ static int load_chrc(char *handle, char *value,
 							&uuid, 0, properties,
 							NULL, NULL, NULL);
 	if (!att || gatt_db_attribute_get_handle(att) != value_handle) {
-		warn("saving characteristic to db failed");
+		warn("loading characteristic to db failed");
 		return -EIO;
 	}
 
@@ -3035,13 +3028,13 @@ static int load_incl(struct gatt_db *db, char *handle, char *value,
 
 	att = gatt_db_get_attribute(db, start);
 	if (!att) {
-		warn("saving included service to db failed - no such service");
+		warn("loading included service to db failed - no such service");
 		return -EIO;
 	}
 
 	att = gatt_db_service_add_included(service, att);
 	if (!att) {
-		warn("saving included service to db failed");
+		warn("loading included service to db failed");
 		return -EIO;
 	}
 
@@ -3078,7 +3071,7 @@ static int load_service(struct gatt_db *db, char *handle, char *value)
 	att = gatt_db_insert_service(db, start, &uuid, primary,
 							end - start + 1);
 	if (!att) {
-		DBG("ERROR saving service to db!");
+		error("Unable load service into db!");
 		return -EIO;
 	}
 
@@ -3161,8 +3154,10 @@ static int load_gatt_db_impl(GKeyFile *key_file, char **keys,
 		}
 
 		g_free(value);
-		if (ret)
+		if (ret) {
+			gatt_db_clear(db);
 			return ret;
+		}
 	}
 
 	if (current_service)
@@ -4520,8 +4515,6 @@ static void register_gatt_services(struct btd_device *device)
 	device_register_primaries(device, services, -1);
 
 	device_add_gatt_services(device);
-
-	device_svc_resolved(device, device->bdaddr_type, 0);
 }
 
 static void gatt_client_init(struct btd_device *device);
@@ -4542,18 +4535,7 @@ static void gatt_client_ready_cb(bool success, uint8_t att_ecode,
 
 	btd_gatt_client_ready(device->client_dbus);
 
-	/*
-	 * Update the GattServices property. Do this asynchronously since this
-	 * should happen after the "Characteristics" and "Descriptors"
-	 * properties of all services have been asynchronously updated by
-	 * btd_gatt_client.
-	 *
-	 * Service discovery will be skipped and exported objects won't change
-	 * if the attribute cache was populated when bt_gatt_client gets
-	 * initialized, so no need to to send this signal if that's the case.
-	 */
-	if (!device->gatt_cache_used)
-		g_idle_add(gatt_services_changed, device);
+	device_svc_resolved(device, device->bdaddr_type, 0);
 }
 
 static void gatt_client_service_changed(uint16_t start_handle,
@@ -4605,8 +4587,6 @@ static void gatt_client_init(struct btd_device *device)
 		gatt_client_cleanup(device);
 		return;
 	}
-
-	device->gatt_cache_used = !gatt_db_isempty(device->db);
 
 	btd_gatt_client_connected(device->client_dbus);
 }
@@ -4722,11 +4702,11 @@ bool device_attach_att(struct btd_device *dev, GIOChannel *io)
 	dst = device_get_address(dev);
 	ba2str(dst, dstaddr);
 
-	if (gatt_db_isempty(dev->db))
-		load_gatt_db(dev, srcaddr, dstaddr);
-
 	gatt_client_init(dev);
 	gatt_server_init(dev, btd_gatt_database_get_db(database));
+
+	if (gatt_db_isempty(dev->db))
+		load_gatt_db(dev, srcaddr, dstaddr);
 
 	/*
 	 * Remove the device from the connect_list and give the passive
@@ -4783,10 +4763,10 @@ done:
 		bonding_request_free(device->bonding);
 	}
 
-	if (device->connect) {
-		if (!device->le_state.svc_resolved && !err)
-			device_browse_gatt(device, NULL);
+	if (!err)
+		device_browse_gatt(device, NULL);
 
+	if (device->connect) {
 		if (err < 0)
 			reply = btd_error_failed(device->connect,
 							strerror(-err));
@@ -4932,12 +4912,12 @@ static int device_browse_gatt(struct btd_device *device, DBusMessage *msg)
 	if (!req)
 		return -EBUSY;
 
-	if (device->attrib) {
+	if (device->client) {
 		/*
 		 * If discovery has not yet completed, then wait for gatt-client
 		 * to become ready.
 		 */
-		if (!device->le_state.svc_resolved)
+		if (!bt_gatt_client_is_ready(device->client))
 			return 0;
 
 		/*

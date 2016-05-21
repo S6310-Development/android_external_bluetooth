@@ -40,7 +40,6 @@
 #include <sys/time.h>
 #include <sys/param.h>
 #include <sys/ioctl.h>
-#include <sys/socket.h>
 #include <sys/uio.h>
 
 #include "lib/bluetooth.h"
