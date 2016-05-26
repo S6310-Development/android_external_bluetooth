@@ -36,6 +36,8 @@
 #include <sys/types.h>
 #include <sys/param.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
 
 #include "lib/bluetooth.h"
 #include "lib/hci.h"
@@ -55,7 +57,7 @@
 
 #define TI_MANUFACTURER_ID	13
 
-#define FIRMWARE_DIRECTORY	"/lib/firmware/ti-connectivity/"
+#define FIRMWARE_DIRECTORY	"/lib/firmware/"
 
 #define ACTION_SEND_COMMAND	1
 #define ACTION_WAIT_EVENT	2
@@ -109,15 +111,15 @@ struct bts_action_serial {
 	uint32_t flow_control;
 }__attribute__ ((packed));
 
-static FILE *bts_load_script(const char *file_name, uint32_t *version)
+static FILE *bts_load_script(const char* file_name, uint32_t* version)
 {
 	struct bts_header header;
-	FILE *fp;
+	FILE* fp;
 
 	fp = fopen(file_name, "rb");
 	if (!fp) {
 		perror("can't open firmware file");
-		return NULL;
+		goto out;
 	}
 
 	if (1 != fread(&header, sizeof(struct bts_header), 1, fp)) {
@@ -133,16 +135,17 @@ static FILE *bts_load_script(const char *file_name, uint32_t *version)
 	if (NULL != version)
 		*version = header.version;
 
-	return fp;
+	goto out;
 
 errclose:
 	fclose(fp);
-
-	return NULL;
+	fp = NULL;
+out:
+	return fp;
 }
 
-static unsigned long bts_fetch_action(FILE *fp, unsigned char *action_buf,
-				unsigned long buf_size, uint16_t *action_type)
+static unsigned long bts_fetch_action(FILE* fp, unsigned char* action_buf,
+				unsigned long buf_size, uint16_t* action_type)
 {
 	struct bts_action action_hdr;
 	unsigned long nread;
@@ -169,7 +172,7 @@ static unsigned long bts_fetch_action(FILE *fp, unsigned char *action_buf,
 	return nread * sizeof(uint8_t);
 }
 
-static void bts_unload_script(FILE *fp)
+static void bts_unload_script(FILE* fp)
 {
 	if (fp)
 		fclose(fp);
@@ -208,7 +211,7 @@ static void brf_delay(struct bts_action_delay *delay)
 }
 
 static int brf_set_serial_params(struct bts_action_serial *serial_action,
-						int fd, int *speed, struct termios *ti)
+						int fd, struct termios *ti)
 {
 	fprintf(stderr, "texas: changing baud rate to %u, flow control to %u\n",
 				serial_action->baud, serial_action->flow_control );
@@ -231,13 +234,10 @@ static int brf_set_serial_params(struct bts_action_serial *serial_action,
 		return -1;
 	}
 
-	if (speed)
-		*speed = serial_action->baud;
-
 	return 0;
 }
 
-static int brf_send_command_socket(int fd, struct bts_action_send *send_action)
+static int brf_send_command_socket(int fd, struct bts_action_send* send_action)
 {
 	char response[1024] = {0};
 	hci_command_hdr *cmd = (hci_command_hdr *) send_action->data;
@@ -267,8 +267,7 @@ static int brf_send_command_socket(int fd, struct bts_action_send *send_action)
 	return 0;
 }
 
-static int brf_send_command_file(int fd, struct bts_action_send *send_action,
-								long size)
+static int brf_send_command_file(int fd, struct bts_action_send* send_action, long size)
 {
 	unsigned char response[1024] = {0};
 	long ret = 0;
@@ -297,8 +296,7 @@ static int brf_send_command_file(int fd, struct bts_action_send *send_action,
 }
 
 
-static int brf_send_command(int fd, struct bts_action_send *send_action,
-						long size, int hcill_installed)
+static int brf_send_command(int fd, struct bts_action_send* send_action, long size, int hcill_installed)
 {
 	int ret = 0;
 	char *fixed_action;
@@ -315,23 +313,21 @@ static int brf_send_command(int fd, struct bts_action_send *send_action,
 }
 
 static int brf_do_action(uint16_t brf_type, uint8_t *brf_action, long brf_size,
-				int fd, int *speed, struct termios *ti, int hcill_installed)
+				int fd, struct termios *ti, int hcill_installed)
 {
 	int ret = 0;
 
 	switch (brf_type) {
 	case ACTION_SEND_COMMAND:
 		DPRINTF("W");
-		ret = brf_send_command(fd,
-					(struct bts_action_send *) brf_action,
-					brf_size, hcill_installed);
+		ret = brf_send_command(fd, (struct bts_action_send*) brf_action, brf_size, hcill_installed);
 		break;
 	case ACTION_WAIT_EVENT:
 		DPRINTF("R");
 		break;
 	case ACTION_SERIAL:
 		DPRINTF("S");
-		ret = brf_set_serial_params((struct bts_action_serial *) brf_action, fd, speed, ti);
+		ret = brf_set_serial_params((struct bts_action_serial *) brf_action, fd, ti);
 		break;
 	case ACTION_DELAY:
 		DPRINTF("D");
@@ -382,7 +378,7 @@ static int brf_action_is_deep_sleep(uint8_t *brf_action, long brf_size,
  * The second time it is called, it assumes HCILL protocol is set up,
  * and sends rest of brf script via the supplied socket.
  */
-static int brf_do_script(int fd, int *speed, struct termios *ti, const char *bts_file)
+static int brf_do_script(int fd, struct termios *ti, const char *bts_file)
 {
 	int ret = 0,  hcill_installed = bts_file ? 0 : 1;
 	uint32_t vers;
@@ -417,7 +413,7 @@ static int brf_do_script(int fd, int *speed, struct termios *ti, const char *bts
 	/* execute current action and continue to parse brf script file */
 	while (brf_size != 0) {
 		ret = brf_do_action(brf_type, brf_action, brf_size,
-						fd, speed, ti, hcill_installed);
+						fd, ti, hcill_installed);
 		if (ret == -1)
 			break;
 
@@ -440,7 +436,7 @@ static int brf_do_script(int fd, int *speed, struct termios *ti, const char *bts
 	return ret;
 }
 
-int texas_init(int fd, int *speed, struct termios *ti)
+int texas_init(int fd, struct termios *ti)
 {
 	struct timespec tm = {0, 50000};
 	char cmd[4];
@@ -491,7 +487,7 @@ int texas_init(int fd, int *speed, struct termios *ti)
 	bts_file = get_firmware_name(resp);
 	fprintf(stderr, "Firmware file : %s\n", bts_file);
 
-	n = brf_do_script(fd, speed, ti, bts_file);
+	n = brf_do_script(fd, ti, bts_file);
 
 	nanosleep(&tm, NULL);
 
@@ -525,7 +521,7 @@ int texas_post(int fd, struct termios *ti)
 		return -1;
 	}
 
-	ret = brf_do_script(dd, NULL, ti, NULL);
+	ret = brf_do_script(dd, ti, NULL);
 
 	hci_close_dev(dd);
 
