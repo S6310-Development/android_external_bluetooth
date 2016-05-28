@@ -36,6 +36,9 @@
 #include "csr.h"
 #include "ubcsp.h"
 
+#include <cutils/log.h>
+#include <cutils/properties.h>
+
 static uint16_t seqnum = 0x0000;
 
 static int fd = -1;
@@ -251,7 +254,8 @@ int csr_write_bcsp(uint16_t varid, uint8_t *value, uint16_t length)
 
 void csr_close_bcsp(void)
 {
-	if(fd != -1)	{
+	if(fd != -1)
+	{
 		close(fd);
 		fd = -1;
 	}

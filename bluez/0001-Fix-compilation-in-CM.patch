@@ -1,0 +1,48 @@
+From 63c755b2aa99d8ba80ea10f10261ec28235c1c01 Mon Sep 17 00:00:00 2001
+From: Nothing-Dev <alfredomartinez_1423@hotmail.com>
+Date: Tue, 10 May 2016 16:40:27 -0400
+Subject: [PATCH] Fix compilation in CM
+
+Signed-off-by: Nothing-Dev <alfredomartinez_1423@hotmail.com>
+---
+ android/client/if-bt.c  | 4 ++--
+ android/hal-bluetooth.c | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/android/client/if-bt.c b/android/client/if-bt.c
+index c9acf6c..eb69ff5 100644
+--- a/android/client/if-bt.c
++++ b/android/client/if-bt.c
+@@ -250,14 +250,14 @@ static void pin_request_answer(char *reply)
+ }
+ 
+ static void pin_request_cb(bt_bdaddr_t *remote_bd_addr, bt_bdname_t *bd_name,
+-								uint32_t cod)
++								uint32_t cod, uint8_t secure)
+ {
+ 	/* Store for command completion */
+ 	bt_bdaddr_t2str(remote_bd_addr, last_remote_addr);
+ 	pin_request_addr = *remote_bd_addr;
+ 
+ 	haltest_info("%s: remote_bd_addr=%s bd_name=%s cod=%06x\n", __func__,
+-					last_remote_addr, bd_name->name, cod);
++					last_remote_addr, bd_name->name, cod, secure);
+ 	terminal_prompt_for("Enter pin: ", pin_request_answer);
+ }
+ 
+diff --git a/android/hal-bluetooth.c b/android/hal-bluetooth.c
+index 66f4a37..f9f1683 100644
+--- a/android/hal-bluetooth.c
++++ b/android/hal-bluetooth.c
+@@ -249,7 +249,7 @@ static void handle_pin_request(void *buf, uint16_t len, int fd)
+ 	DBG("");
+ 
+ 	if (bt_hal_cbacks->pin_request_cb)
+-		bt_hal_cbacks->pin_request_cb(addr, name, ev->class_of_dev);
++		bt_hal_cbacks->pin_request_cb(addr, name, ev->class_of_dev, 0);
+ }
+ 
+ static void handle_ssp_request(void *buf, uint16_t len, int fd)
+-- 
+1.9.1
+

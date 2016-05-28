@@ -50,6 +50,7 @@
 #include "lib/hci_lib.h"
 
 #include "hciattach.h"
+
 #include "ppoll.h"
 
 struct uart_t {
@@ -350,6 +351,8 @@ static void bcsp_tshy_sig_alarm(int sig)
 	unsigned char bcsp_sync_pkt[10] = {0xc0,0x00,0x41,0x00,0xbe,0xda,0xdc,0xed,0xed,0xc0};
 	static int retries = 0;
 
+	printf("[hciattach] Shy state. Send sync.\n"); //SS_BLUETOOTH(is80.hwang) 2012.02.10 : for CSR BT Initialization
+
 	if (retries < bcsp_max_retries) {
 		retries++;
 		if (write(serial_fd, &bcsp_sync_pkt, 10) < 0)
@@ -367,6 +370,8 @@ static void bcsp_tconf_sig_alarm(int sig)
 {
 	unsigned char bcsp_conf_pkt[10] = {0xc0,0x00,0x41,0x00,0xbe,0xad,0xef,0xac,0xed,0xc0};
 	static int retries = 0;
+
+	printf("[hciattach] Curious state. Send Conf.\n"); //SS_BLUETOOTH(is80.hwang) 2012.02.10 : for CSR BT Initialization
 
 	if (retries < bcsp_max_retries){
 		retries++;
@@ -504,6 +509,8 @@ static int bcsp(int fd, struct uart_t *u, struct termios *ti)
 		if (len < 0)
 			return -errno;
 	}
+
+	printf("[hciattach] Garrulous state.\n"); //SS_BLUETOOTH(is80.hwang) 2012.02.10 : for CSR BT Initialization
 
 	/* State = garrulous */
 
@@ -1250,9 +1257,7 @@ static void usage(void)
 {
 	printf("hciattach - HCI UART driver initialization utility\n");
 	printf("Usage:\n");
-	printf("\thciattach [-n] [-p] [-b] [-r] [-t timeout] [-s initial_speed]"
-			" <tty> <type | id> [speed] [flow|noflow]"
-			" [sleep|nosleep] [bdaddr]\n");
+	printf("\thciattach [-n] [-p] [-b] [-r] [-t timeout] [-s initial_speed] <tty> <type | id> [speed] [flow|noflow] [bdaddr]\n");
 	printf("\thciattach -l\n");
 }
 

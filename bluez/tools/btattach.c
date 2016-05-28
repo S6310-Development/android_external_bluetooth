@@ -280,7 +280,7 @@ int main(int argc, char *argv[])
 	for (;;) {
 		int opt;
 
-		opt = getopt_long(argc, argv, "B:A:P:S:Rvh",
+		opt = getopt_long(argc, argv, "B:A:P:Rvh",
 						main_options, NULL);
 		if (opt < 0)
 			break;
