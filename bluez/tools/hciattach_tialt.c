@@ -96,7 +96,7 @@ typedef struct {
 	uint32_t speed;
 } __attribute__((packed)) texas_speed_change_cmd_t;
 
-static int texas_change_speed(int fd, uint32_t speed)
+static int texas_change_speed(int fd, struct termios *ti, uint32_t speed)
 {
         /* Send a speed-change request */
         texas_speed_change_cmd_t cmd;
